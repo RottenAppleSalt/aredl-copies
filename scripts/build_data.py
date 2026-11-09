@@ -13,7 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-API = "https://api.aredl.net/v2/api/aredl"
+API_ROOT = "https://api.aredl.net/v2/api"
+LISTS = ("aredl", "arepl")  # classic and platformer
 CONCURRENCY = 2  # AREDL rate-limits bursts; 2 at a time stays well under it
 OUT = Path(__file__).resolve().parent.parent / "site" / "data.json"
 
@@ -42,18 +43,20 @@ def get_json(url, tries=6):
         time.sleep(wait)
 
 
-def main():
-    levels = get_json(f"{API}/levels")
-    print(f"Fetched {len(levels)} levels", flush=True)
+def build_list(list_key):
+    base = f"{API_ROOT}/{list_key}"
+    # exclude_pending=false so pending levels are included too (the API hides them by default).
+    levels = get_json(f"{base}/levels?exclude_pending=false")
+    print(f"[{list_key}] fetched {len(levels)} levels", flush=True)
 
     failed = []
 
     def fetch_copies(level):
         try:
-            return level["id"], get_json(f"{API}/levels/{level['id']}/custom-copies")
+            return level["id"], get_json(f"{base}/levels/{level['id']}/custom-copies")
         except Exception as err:  # noqa: BLE001
             failed.append(level["name"])
-            print(f"Failed {level['name']}: {err}", file=sys.stderr)
+            print(f"[{list_key}] failed {level['name']}: {err}", file=sys.stderr)
             return level["id"], None
 
     with ThreadPoolExecutor(CONCURRENCY) as pool:
@@ -61,43 +64,43 @@ def main():
 
     # A partial snapshot would silently hide copies, so refuse to publish one.
     if len(failed) > len(levels) * 0.02:
-        sys.exit(f"{len(failed)} levels failed; not writing data.json")
+        sys.exit(f"[{list_key}] {len(failed)} levels failed; not writing data.json")
 
-    def person(p):
-        if isinstance(p, dict):
-            return p.get("global_name") or p.get("username")
-        return None
+    out = [
+        {
+            "id": l["id"],
+            "name": l["name"],
+            "position": l["position"],
+            "gdId": l["level_id"],
+            "twoPlayer": l["two_player"],
+            "status": l["status"],  # MainList, Legacy or Pending
+            "copies": [
+                {
+                    "copyId": c["copy_id"],
+                    "type": c["id_type"],
+                    "status": c["status"],
+                    "description": c.get("description"),
+                    "createdAt": c["created_at"],
+                }
+                for c in (copies_by_level.get(l["id"]) or [])
+            ],
+        }
+        for l in levels
+        if l["status"] != "Removed"
+    ]
+    total = sum(len(l["copies"]) for l in out)
+    print(f"[{list_key}] {total} copies across {len(out)} levels ({len(failed)} failed)", flush=True)
+    return out
 
+
+def main():
     out = {
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "levels": [
-            {
-                "id": l["id"],
-                "name": l["name"],
-                "position": l["position"],
-                "gdId": l["level_id"],
-                "twoPlayer": l["two_player"],
-                "legacy": l["status"] == "Legacy",
-                "copies": [
-                    {
-                        "copyId": c["copy_id"],
-                        "type": c["id_type"],
-                        "status": c["status"],
-                        "description": c.get("description"),
-                        "addedBy": person(c.get("added_by")),
-                        "createdAt": c["created_at"],
-                    }
-                    for c in (copies_by_level.get(l["id"]) or [])
-                ],
-            }
-            for l in levels
-        ],
+        "lists": {key: build_list(key) for key in LISTS},
     }
-
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-    total = sum(len(l["copies"]) for l in out["levels"])
-    print(f"Wrote {total} copies across {len(levels)} levels ({len(failed)} failed)")
+    print(f"Wrote {OUT}")
 
 
 if __name__ == "__main__":

@@ -6,9 +6,14 @@
 //    against the API so you always see the latest copies for the level you looked up.
 // There are no forms, no write requests and no HTML injection: API text is only ever set via textContent.
 
-const API = "https://api.aredl.net/v2/api/aredl";
+const API_ROOT = "https://api.aredl.net/v2/api";
+const LISTS = {
+  aredl: { label: "Classic", link: (id) => `https://aredl.net/list/${id}` },
+  arepl: { label: "Platformer", link: (id) => `https://aredl.net/list/${id}?list=platformer` },
+};
+const LIST_KEY = "aredl-copies:list";
 const DATA_URL = "data.json";
-const CACHE_KEY = "aredl-copies:data:v1";
+const CACHE_KEY = "aredl-copies:data:v2";
 const COOLDOWN_KEY = "aredl-copies:last-refresh";
 const HOUR = 60 * 60 * 1000;
 const MAX_AGE = HOUR;              // re-download the snapshot after this long
@@ -34,11 +39,13 @@ const els = {
   search: $("search"), list: $("list"), sentinel: $("sentinel"), summary: $("summary"),
   updated: $("updated"), refresh: $("refresh"), error: $("error"),
   statusChips: $("status-chips"), typeChips: $("type-chips"),
-  hideEmpty: $("hide-empty"), showLegacy: $("show-legacy"),
+  hideEmpty: $("hide-empty"), showLegacy: $("show-legacy"), showPending: $("show-pending"),
+  listTabs: [...document.querySelectorAll(".seg-btn")],
 };
 
 const state = {
-  data: null,            // { generatedAt, fetchedAt, levels: [...] }
+  data: null,            // { generatedAt, fetchedAt, lists: { aredl: [...], arepl: [...] } }
+  list: "aredl",         // which list is shown
   live: new Map(),       // levelId -> { at, copies }
   statuses: new Set(STATUSES),
   types: new Set(TYPES.map((t) => t.key)),
@@ -63,12 +70,19 @@ function tagsFor(copy) {
 }
 
 function prepare(data) {
-  for (const level of data.levels) {
-    level.hay = `${level.name} ${level.gdId}`.toLowerCase();
-    for (const c of level.copies) c.tags = tagsFor(c);
+  for (const levels of Object.values(data.lists)) {
+    for (const level of levels) {
+      level.hay = `${level.name} ${level.gdId}`.toLowerCase();
+      for (const c of level.copies) c.tags = tagsFor(c);
+    }
+    // Ranked levels by position; pending levels (no position yet) at the end, alphabetically.
+    levels.sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || a.name.localeCompare(b.name));
   }
-  data.levels.sort((a, b) => a.position - b.position);
   return data;
+}
+
+function currentLevels() {
+  return state.data.lists[state.list] ?? [];
 }
 
 function normalizeApiCopy(c) {
@@ -77,7 +91,6 @@ function normalizeApiCopy(c) {
     type: c.id_type,
     status: c.status,
     description: c.description ?? null,
-    addedBy: c.added_by?.global_name || c.added_by?.username || null,
     createdAt: c.created_at,
   };
 }
@@ -91,8 +104,10 @@ async function fetchSnapshot() {
   const res = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Couldn't load data (HTTP ${res.status})`);
   const json = await res.json();
-  if (!json || !Array.isArray(json.levels)) throw new Error("Data file is malformed");
-  return { generatedAt: json.generatedAt, fetchedAt: Date.now(), levels: json.levels };
+  if (!json || !json.lists || !Object.keys(LISTS).every((k) => Array.isArray(json.lists[k]))) {
+    throw new Error("Data file is malformed");
+  }
+  return { generatedAt: json.generatedAt, fetchedAt: Date.now(), lists: json.lists };
 }
 
 function isStale(d) {
@@ -119,10 +134,11 @@ async function loadSnapshot(force) {
 
 async function liveCheck(levels, { force = false } = {}) {
   const now = Date.now();
+  const listKey = state.list;
   const todo = levels.filter((l) => force || !state.live.has(l.id) || now - state.live.get(l.id).at > LIVE_TTL);
   if (!todo.length) return;
   const results = await Promise.allSettled(todo.map(async (l) => {
-    const res = await fetch(`${API}/levels/${encodeURIComponent(l.id)}/custom-copies`, { headers: { Accept: "application/json" } });
+    const res = await fetch(`${API_ROOT}/${listKey}/levels/${encodeURIComponent(l.id)}/custom-copies`, { headers: { Accept: "application/json" } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const arr = await res.json();
     if (!Array.isArray(arr)) throw new Error("bad response");
@@ -146,9 +162,11 @@ function computeResults() {
   const tokens = els.search.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const hideEmpty = els.hideEmpty.checked || filtersActive();
   const showLegacy = els.showLegacy.checked;
+  const showPending = els.showPending.checked;
   const out = [];
-  for (const level of state.data.levels) {
-    if (!showLegacy && level.legacy) continue;
+  for (const level of currentLevels()) {
+    if (!showLegacy && level.status === "Legacy") continue;
+    if (!showPending && level.status === "Pending") continue;
     const copies = copiesOf(level);
     if (tokens.length) {
       const ids = copies.map((c) => c.copyId).join(" ");
@@ -190,9 +208,9 @@ function renderCopy(c) {
     el("span", { class: `pill st-${c.status}`, text: c.status }),
     ...c.tags.map((t) => el("span", { class: `tag ty-${t}`, text: TYPE_LABEL[t] ?? t })));
 
+  // Who added a copy is deliberately not shown (staff privacy); only the date is.
   const metaBits = [];
-  if (c.addedBy) metaBits.push(`added by ${c.addedBy}`);
-  if (c.createdAt) metaBits.push(dateFmt.format(new Date(c.createdAt)));
+  if (c.createdAt) metaBits.push(`added ${dateFmt.format(new Date(c.createdAt))}`);
 
   return el("li", { class: `copy st-${c.status}` },
     idBtn,
@@ -210,11 +228,12 @@ function renderLevel({ level, shown }) {
   }
 
   const head = el("div", { class: "level-head" },
-    el("span", { class: "pos", text: `#${level.position}` }),
-    el("a", { class: "lname", href: `https://aredl.net/list/${level.gdId}${level.twoPlayer ? "_2p" : ""}`, target: "_blank", rel: "noopener", text: level.name }),
+    el("span", { class: "pos", text: level.position == null ? "—" : `#${level.position}` }),
+    el("a", { class: "lname", href: LISTS[state.list].link(`${level.gdId}${level.twoPlayer ? "_2p" : ""}`), target: "_blank", rel: "noopener", text: level.name }),
     el("span", { class: "gdid", text: String(level.gdId) }),
     level.twoPlayer ? el("span", { class: "badge", text: "2P" }) : null,
-    level.legacy ? el("span", { class: "badge", text: "Legacy" }) : null,
+    level.status === "Legacy" ? el("span", { class: "badge", text: "Legacy" }) : null,
+    level.status === "Pending" ? el("span", { class: "badge pending", title: "Not placed on the list yet", text: "Pending" }) : null,
     state.live.has(level.id) ? el("span", { class: "live", title: "Checked live against the AREDL API", text: "● live" }) : null,
     counts);
 
@@ -263,7 +282,7 @@ function render(scheduleLive = true) {
 }
 
 function renderChips() {
-  const all = state.data.levels.flatMap((l) => l.copies);
+  const all = currentLevels().flatMap((l) => l.copies);
   const statusCount = (s) => all.filter((c) => c.status === s).length;
   const typeCount = (t) => all.filter((c) => c.tags.includes(t)).length;
 
@@ -339,24 +358,44 @@ async function refresh({ manual }) {
 function showError(msg) { els.error.textContent = msg; els.error.hidden = false; }
 function hideError() { els.error.hidden = true; }
 
+// ---------- list switch (Classic / Platformer) ----------
+function updateUrl() {
+  const url = new URL(location.href);
+  if (els.search.value.trim()) url.searchParams.set("q", els.search.value.trim()); else url.searchParams.delete("q");
+  if (state.list === "arepl") url.searchParams.set("list", "platformer"); else url.searchParams.delete("list");
+  history.replaceState(null, "", url);
+}
+
+function setList(key, { silent = false } = {}) {
+  if (!LISTS[key]) return;
+  state.list = key;
+  save(LIST_KEY, key);
+  for (const tab of els.listTabs) tab.setAttribute("aria-selected", String(tab.dataset.list === key));
+  document.title = key === "arepl" ? "AREDL Copies · Platformer" : "AREDL Copies";
+  if (silent) return;
+  updateUrl();
+  if (state.data) { renderChips(); render(); window.scrollTo({ top: 0 }); }
+}
+
 // ---------- boot ----------
 async function init() {
   els.search.addEventListener("input", () => render());
   els.hideEmpty.addEventListener("change", () => render());
   els.showLegacy.addEventListener("change", () => render());
+  els.showPending.addEventListener("change", () => render());
+  for (const tab of els.listTabs) tab.addEventListener("click", () => setList(tab.dataset.list));
   els.refresh.addEventListener("click", () => refresh({ manual: true }));
   new IntersectionObserver((entries) => {
     if (entries.some((e) => e.isIntersecting)) renderMore();
   }, { rootMargin: "800px" }).observe(els.sentinel);
 
   // Search from the URL (?q=...) so results can be linked.
-  const q = new URLSearchParams(location.search).get("q");
+  const params = new URLSearchParams(location.search);
+  const q = params.get("q");
   if (q) els.search.value = q;
-  els.search.addEventListener("change", () => {
-    const url = new URL(location.href);
-    if (els.search.value.trim()) url.searchParams.set("q", els.search.value.trim()); else url.searchParams.delete("q");
-    history.replaceState(null, "", url);
-  });
+  const fromUrl = params.get("list") === "platformer" ? "arepl" : params.get("list") === "classic" ? "aredl" : null;
+  setList(fromUrl ?? (LISTS[load(LIST_KEY)] ? load(LIST_KEY) : "aredl"), { silent: true });
+  els.search.addEventListener("change", updateUrl);
 
   try {
     state.data = await loadSnapshot(false);

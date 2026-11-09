@@ -29,6 +29,10 @@
 
   <main class="wrap">
     <section class="controls" aria-label="Search and filters">
+      <div class="seg" role="tablist" aria-label="List">
+        <button type="button" role="tab" class="seg-btn" data-list="aredl" aria-selected="true">Classic</button>
+        <button type="button" role="tab" class="seg-btn" data-list="arepl" aria-selected="false">Platformer</button>
+      </div>
       <input id="search" class="search" type="search" placeholder="Search level name, level ID or copy ID…"
              autocomplete="off" spellcheck="false" aria-label="Search levels" autofocus>
 
@@ -43,6 +47,7 @@
       <div class="filter-row toggles">
         <label class="toggle"><input type="checkbox" id="hide-empty" checked> Hide levels with no copies</label>
         <label class="toggle"><input type="checkbox" id="show-legacy" checked> Include legacy levels</label>
+        <label class="toggle"><input type="checkbox" id="show-pending"> Include pending levels</label>
       </div>
     </section>
 

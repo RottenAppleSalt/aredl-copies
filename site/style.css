@@ -81,6 +81,19 @@ h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
 
 /* controls */
 .controls { padding: 18px 0 6px; display: grid; gap: 10px; }
+.seg {
+  display: inline-flex; justify-self: start; padding: 3px; gap: 3px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+}
+.seg-btn {
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  padding: 6px 16px; border-radius: 7px; border: 0;
+  background: transparent; color: var(--muted);
+}
+.seg-btn[aria-selected="true"] { background: var(--accent); color: #fff; }
+.seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.badge.pending { color: var(--published); border-color: color-mix(in srgb, var(--published) 45%, transparent); }
+
 .search {
   width: 100%; font: inherit; font-size: 16px;
   padding: 12px 14px; border-radius: 10px;
