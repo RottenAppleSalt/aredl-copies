@@ -1,0 +1,3 @@
+# Built by the workflow every hour; not stored in the repo.
+site/data.json
+__pycache__/
